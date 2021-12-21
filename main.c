@@ -1,7 +1,7 @@
 //========================================================//
 //  CSE 240a Cache  Lab                                   //
 //                                                        //
-//  Students need to implement various Cache  Predictors  //
+//  Students need to implement L1 Cache                   //
 //========================================================//
 
 #define _GNU_SOURCE
@@ -23,16 +23,13 @@ char *buf = NULL;
 size_t len = 0;
 // Set defaults
 uint32_t address=0;
-uint8_t cycle=0, loadnotstore=0;
-uint32_t num_accesses=0;
-uint8_t miss=0;
-uint32_t misses=0, hits = 0;
-uint32_t indexBits,indexMask;
-uint32_t writehits=0,writemisses=0,readhits=0, readmisses=0;
+uint8_t cycle=0, loadnotstore=0,miss=0;
+uint32_t num_accesses=0,misses=0, hits = 0,indexBits=0,indexMask=0,writehits=0,writemisses=0,readhits=0, readmisses=0;
+uint32_t numOfSets = SETS;
+uint32_t verbose = 0,replacement=1;
+long cycle_access_time = 0;
 int blockOffsetBits = 0 ;
 char marker;
-uint32_t numOfSets = SETS;
-long cycle_access_time = 0;
 
 //The Below structure can be used for most Caches... Differences will come when we need different versions of cache or different replacement policies
 //We dont need Data Currently because we are just Modelling the Cache Access Pattern
@@ -41,18 +38,32 @@ typedef struct cacheBlk
   uint8_t  valid[ASSOCIATIVITY];
   uint32_t tag[ASSOCIATIVITY];
   uint8_t  firstin;
+  uint8_t  lastin;
 } CacheImpl;
 CacheImpl Cache[SETS];
 //FIXME - Add more documentation here later on
 void usage()
 {
-  fprintf(stderr,"Usage: predictor <options> [<trace>]\n");
+  fprintf(stderr,"Usage: simulator <options> [<trace>]\n");
+  fprintf(stderr,"Usage: bunzip2 -kc gcc.trace.bz2 | ./main\n");
+  fprintf(stderr," --verbose:0/1/2/3/4  (0:Default) Print different detailed debug message on stdout\n");
+  fprintf(stderr," --replacement:0/1    Use (0:default) for FIFO replacement policy, use (1) for LIFO replacement policy\n");
 }
 //FIXME - Add more processing here
 int handle_option(char const *arg)
 {
-  printf("Something's wrong here\n");
-  return 1;
+  if (!strncmp(arg,"--verbose:",10)) {
+    sscanf(arg+10,"%d", &verbose);
+    printf("VERBOSE Setting : %d\n", verbose);
+    return 1;
+  }
+  else if (!strncmp(arg,"--replacement:",14)) {
+    sscanf(arg+14,"%d", &replacement);
+    printf("replacement Setting : %d\n", replacement);
+    return 1;
+  }
+  else
+    return 0;
 }
 //This function extracts information from the trace file
 int read_access(char *marker, uint8_t *loadnotstore, uint32_t *pc, uint8_t *cycle)
@@ -67,9 +78,9 @@ int read_access(char *marker, uint8_t *loadnotstore, uint32_t *pc, uint8_t *cycl
   //printf("%s\n", buf);
   *cycle = cycle_temp;
   *loadnotstore = loadnotstore_temp;
-  //printf("READ_ACCESS : loadnotstore : %d\n", *loadnotstore);
-  //printf("READ_ACCESS : Address : %x\n", *pc);
-  //printf("READ_ACCESS : Cycle : %d\n", *cycle);
+  if(verbose > 2) printf("READ_ACCESS_FUNCTION : loadnotstore : %d\n", *loadnotstore);
+  if(verbose > 2) printf("READ_ACCESS_FUNCTION : Address : %x\n", *pc);
+  if(verbose > 2) printf("READ_ACCESS_FUNCTION : Cycle : %d\n", *cycle);
   return 1;
 }
 
@@ -80,23 +91,24 @@ int is_cache_miss(uint8_t loadnotstore, uint32_t address){
   int tag, tagAddr;
   int tagMatch = 0;
   int allocateMatch = 0;
-  int firstin;
-  //printf("IS_CACHE_MISS : loadnotstore : %d\n", loadnotstore);
-  //printf("IS_CACHE_MISS : Address : %x\n", address);
+  int firstin,lastin;
+  if(verbose > 2) printf("IS_CACHE_MISS : loadnotstore : %d\n", loadnotstore);
+  if(verbose > 2) printf("IS_CACHE_MISS : Address : %x\n", address);
   uint32_t address_temp;
   address_temp = address >> blockOffsetBits;
   idx = address_temp & indexMask;
 
   address_temp = address_temp >> indexBits;
   tagAddr = address_temp;
-  //printf("IS_CACHE_MISS idx : %x, TAG to look for : %x\n", idx, tagAddr);
+  if(verbose > 2) printf("IS_CACHE_MISS idx : %x, TAG to look for : %x\n", idx, tagAddr);
   firstin = Cache[idx].firstin;
+  lastin  = Cache[idx].lastin;
   
   //Check for match in Cache 
   for(i =0; i < ASSOCIATIVITY; i++){
     if((tagAddr == Cache[idx].tag[i]) && (Cache[idx].valid[i] == 1)){
       tagMatch = 1;
-      //printf("Found a Tag Match\n");
+      if(verbose > 3) printf("Found a Tag Match\n");
       break;
     }
   }
@@ -108,33 +120,50 @@ int is_cache_miss(uint8_t loadnotstore, uint32_t address){
         Cache[idx].valid[i] = 1;
         Cache[idx].tag[i] = tagAddr;
         allocateMatch = 1;
-        //printf("Allocated an Entry here at idx %x, entry %x with Tag : %x, with Valid %d\n",idx,i,tagAddr,Cache[idx].valid[i]);
+        if(verbose > 3) printf("Allocated an Entry here at idx %x, entry %x with Tag : %x, with Valid %d\n",idx,i,tagAddr,Cache[idx].valid[i]);
         break;
       }
     }
   } 
   //If there is a conflict, then find the place to remove
   if(allocateMatch == 0){
-    Cache[idx].valid[firstin] = 1;
-    Cache[idx].tag[firstin]   = tagAddr;
-    //printf("ALlocated an entry on a conflict entry\n");
+    if(replacement == 0){
+      Cache[idx].valid[firstin] = 1;
+      Cache[idx].tag[firstin]   = tagAddr;
+      if(verbose > 3) printf("ALlocated an entry on a conflict entry no : %d using FIFO\n",firstin);
+    } 
+    else if (replacement == 1){
+      Cache[idx].valid[lastin] = 1;
+      Cache[idx].tag[lastin]   = tagAddr;
+      if(verbose > 3) printf("ALlocated an entry on a conflict entry no : %d using LIFO\n",lastin);
+    }
   }
   //For Caches with Conflicts check how to increment counter 
-  if(ASSOCIATIVITY > 1){
-    if(Cache[idx].firstin <= (ASSOCIATIVITY-2)){
-      Cache[idx].firstin++;
-    }
-    else{
-      Cache[idx].firstin = 0;
-    }
+  if(ASSOCIATIVITY > 1 && allocateMatch == 0){
+    if(replacement == 0){
+      if(Cache[idx].firstin <= (ASSOCIATIVITY-2)){
+        Cache[idx].firstin++;
+      }
+      else{
+        Cache[idx].firstin = 0;
+      }
+    }       
+    else if (replacement == 1){
+      if(Cache[idx].lastin > 0){
+        Cache[idx].lastin--;
+      }
+      else{
+        Cache[idx].lastin = ASSOCIATIVITY-1;
+      }
+    }                
   }
   //Return Miss if block wasn't found
   if(tagMatch == 0){
-    //printf("Missed in Cache\n");
+    if(verbose > 4) printf("Missed in Cache\n");
     return 1;
   }
   else {
-    //printf("Hit in Cache\n");
+    if(verbose > 4) printf("Hit in Cache\n");
     return 0;
   }
 }
@@ -149,25 +178,19 @@ int main(int argc, char const *argv[])
 
   int i;
   stream = stdin;
-  //printf("%s\n", argv[0]);
   // Process cmdline Arguments
-  for (i = 1; i < argc; ++i) {
-    //printf("%s\n", argv[i]);
+  for (i = 1; i < argc; i++) {
     if (!strcmp(argv[i],"--help")) {
       usage();
       exit(0);
-    } else if (!strncmp(argv[i],"--",2)) {
+    } 
+    else if (!strncmp(argv[i],"--",2)) {
       if (!handle_option(argv[i])) {
         printf("Unrecognized option %s\n", argv[i]);
         usage();
         exit(1);
       }
-    } else {
-      // Use as input file
-      //printf("I am here with file %s\n",argv[i]);
-      stream = fopen(argv[i], "r");
-    }
-    //printf("I am here2\n");
+    } 
   }
   //Initialize Cache to be Empty initially
   for (int i = 0; i < SETS; i++)
@@ -177,8 +200,9 @@ int main(int argc, char const *argv[])
       Cache[i].tag[j]   = 0;
     }
     Cache[i].firstin = 0;
+    Cache[i].lastin = ASSOCIATIVITY-1;
   }
-  //printf("Hello World\n");
+
   blockOffsetBits = log2n(BLOCK_SIZE);
   //printf("%d\n", blockOffsetBits);
   indexBits       = log2n(SETS);
